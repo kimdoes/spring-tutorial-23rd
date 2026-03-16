@@ -482,49 +482,59 @@ for (AnnotationAttributes componentScan : componentScans) {
 - isConcrete() → 구현체인지 확인한다. 인터페이스나 추상클래스는 해당되지 않는다.
 - isAbstract() + Lookup.class() → 추상클래스더라도 @Lookup이 있다면 빈으로 등록할 수 있기 때문에 이 여부를 조사한다.
 
-```java
-Set\<ConfigurationClass\> configClasses = new LinkedHashSet<\>(parser.getConfigurationClasses());
-			configClasses.removeAll(alreadyParsed);
 
-			// Read the model and create bean definitions based on its content
-			if (this.reader == null) {
-				this.reader = new ConfigurationClassBeanDefinitionReader(
-						registry, this.sourceExtractor, this.resourceLoader, this.environment,
-						this.importBeanNameGenerator, parser.getImportRegistry());
-			}
-			this.reader.loadBeanDefinitions(configClasses);
+```java
+protected Set<BeanDefinitionHolder> doScan(String... basePackages) {
+Set<BeanDefinitionHolder> beanDefinitions = new LinkedHashSet<>();
+
+    for (String basePackage : basePackages) {
+        Set<BeanDefinition> candidates = findCandidateComponents(basePackage);
+		
+        for (BeanDefinition candidate : candidates) {
+            ScopeMetadata scopeMetadata = this.scopeMetadataResolver.resolveScopeMetadata(candidate);
+            candidate.setScope(scopeMetadata.getScopeName());
+            String beanName = this.beanNameGenerator.generateBeanName(candidate, this.registry);
 			...
-			candidates.clear();
+            
+            if (checkCandidate(beanName, candidate)) {
+                BeanDefinitionHolder definitionHolder = new BeanDefinitionHolder(candidate, beanName);
+                definitionHolder = AnnotationConfigUtils.applyScopedProxyMode(scopeMetadata, definitionHolder, this.registry);
+                beanDefinitions.add(definitionHolder);
+                registerBeanDefinition(definitionHolder, this.registry);
+            }
+        }
+    }
+    return beanDefinitions;
 }
 ```
-
-그리고 다시 Parser를 호출했던 `ConfigurationClassPostProcessor` 클래스가 스캔이 끝난 BeanDefinition들을 모아놓은 Set을 토대로 ApplicationContext에 등록한다.
+다시 doScan() 메서드로 돌아가면 여기서 반환된 candidates에 있는 BeanDefinition을 하나씩 ApplicationConext에 등록한다.
 
 ```java
-	//AnnotationConfigurableApplicationContext	
+//AnnotationConfigurableApplicationContext	
 @Override
 public void refresh() throws BeansException, IllegalStateException {
     ...
-		try {
-		    ...
-		    try {
-				    ...
-				    invokeBeanFactoryPostProcessors(beanFactory);
-				    //invokeBeanFactoryPostProcessors를 통해서 위의 과정에서의
-				    //BeanDefinition 등록이 일어나게된다.
-				    ...
-				    finishBeanFactoryInitialization(beanFactory);
-				...
-		    }
+    try {
+        ...
+        try {
+            ...
+            invokeBeanFactoryPostProcessors(beanFactory);
+            //invokeBeanFactoryPostProcessors를 통해서 위의 과정에서의
+            //BeanDefinition 등록이 일어나게된다.
+				
+            ...
+            finishBeanFactoryInitialization(beanFactory);
+            ...
+        }
     }
 }
 	
 ↓
 
 protected void finishBeanFactoryInitialization(ConfigurableListableBeanFactory beanFactory) {
-		...
-		beanFactory.preInstantiateSingletons();
-	}
+    ...
+    beanFactory.preInstantiateSingletons();
+}
 
 ↓
 
@@ -532,17 +542,20 @@ protected void finishBeanFactoryInitialization(ConfigurableListableBeanFactory b
 @Override
 public void preInstantiateSingletons() throws BeansException {
     ...
-		try {
-		    List<CompletableFuture<\?>> futures = new ArrayList<\>();
-		    for (String beanName : beanNames) /* BeanDefinition 이름들의 배열 */  {
-				    RootBeanDefinition mbd = getMergedLocalBeanDefinition(beanName);
-				
-				    if (!mbd.isAbstract() && mbd.isSingleton()) {
-				        CompletableFuture<\?> future = preInstantiateSingleton(beanName, mbd);
-					    ...
-				    }
-				...
-	}
+    List<String> beanNames = new ArrayList<>(this.beanDefinitionNames);
+    ...
+    try {
+        List<CompletableFuture<\?>> futures = new ArrayList<\>();
+        for (String beanName : beanNames) /* BeanDefinition 이름들의 배열 */  {
+            RootBeanDefinition mbd = getMergedLocalBeanDefinition(beanName);
+
+            if (!mbd.isAbstract() && mbd.isSingleton()) {
+                CompletableFuture<\?> future = preInstantiateSingleton(beanName, mbd);
+                ...
+            }
+        ...
+        }
+    }
 }
 ```
 
@@ -550,58 +563,52 @@ public void preInstantiateSingletons() throws BeansException {
 
 ```java
 private @Nullable CompletableFuture<\?> preInstantiateSingleton(String beanName, RootBeanDefinition mbd) {
-    ...
+   ...
 
-		if (!mbd.isLazyInit()) {
-		    try {
-				    instantiateSingleton(beanName);
-		    }
-		    catch (BeanCurrentlyInCreationException ex) {
-				    ...
-		    }
-		}
-		
-		return null;
-}
-	
+    if (!mbd.isLazyInit()) {
+        try {
+            instantiateSingleton(beanName);
+        }
+    ...
+    
 ↓
 
-private void instantiateSingleton(String beanName) {
-    if (isFactoryBean(beanName)) {
-		    Object bean = getBean(FACTORY_BEAN_PREFIX + beanName);
-			
-		    if (bean instanceof SmartFactoryBean<?> smartFactoryBean && smartFactoryBean.isEagerInit()) {
-				    getBean(beanName);
-		    }
-		}
-		else {
-		    getBean(beanName);
-		}
-}
+        private void instantiateSingleton(String beanName) {
+            if (isFactoryBean(beanName)) {
+                Object bean = getBean(FACTORY_BEAN_PREFIX + beanName);
+
+                if (bean instanceof SmartFactoryBean<?> smartFactoryBean && smartFactoryBean.isEagerInit()) {
+                    getBean(beanName);
+                }
+            }
+            else {
+                getBean(beanName);
+            }
+        }
 
 ↓
 
 //AbstractBeanFactory 클래스
 public Object getBean(String name) throws BeansException {
-		return doGetBean(name, null, null, false);
+    return doGetBean(name, null, null, false);
 }
 	
 ↓
 
-protected <T> T doGetBean( String name, @Nullable Class<T> requiredType, @Nullable Object @Nullable [] args, boolean typeCheckOnly) throws BeansException {
+protected <T> T doGetBean(
+    String name, @Nullable Class<T> requiredType, @Nullable Object @Nullable [] args, boolean typeCheckOnly)
+    throws BeansException {
+
     ...
 
-    // Create bean instance.
-    if (mbd.isSingleton()) {
-		    sharedInstance = getSingleton(beanName, () -> {
-        try {
-				    return createBean(beanName, mbd, args);
-				}
-				...
-				}
-			});
-    ...
-}
+            // Create bean instance.
+            if (mbd.isSingleton()) {
+                sharedInstance = getSingleton(beanName, () -> {
+                    try {
+                        return createBean(beanName, mbd, args);
+                    }
+                });
+            }
 ```
 
 여기서 본격적으로 컴포넌트 스캔 과정에서 얻은 BeanDefinition을 토대로 Bean을 생성한다. BeanDefinition을 기반으로 Bean을 생성해 ApplicationContext에 등록하게된다.
@@ -609,27 +616,41 @@ protected <T> T doGetBean( String name, @Nullable Class<T> requiredType, @Nullab
 ```java
 //AbstractAutowireCapableBeanFactory 클래스
 @Override
-protected Object createBean(String beanName, RootBeanDefinition mbd, @Nullable Object @Nullable [] args) throws BeanCreationException {
+protected Object createBean(String beanName, RootBeanDefinition mbd, @Nullable Object @Nullable [] args)
+throws BeanCreationException {
+...
+
+    try {
+        Object beanInstance = doCreateBean(beanName, mbdToUse, args);
+        ...
+        return beanInstance;
+    }
     ...
-		try {
-		    Object beanInstance = doCreateBean(beanName, mbdToUse, args);
-		    ...
-		    return beanInstance;
-		}
-		...
 }
 
 ↓
 
-protected Object doCreateBean(String beanName, RootBeanDefinition mbd, @Nullable Object @Nullable [] args) throws BeanCreationException {
-		...
-		// Initialize the bean instance.
-		Object exposedObject = bean;
-		try {
-		    populateBean(beanName, mbd, instanceWrapper);
-		    ...
-		}
-		...
+protected Object doCreateBean(String beanName, RootBeanDefinition mbd, @Nullable Object @Nullable [] args)
+throws BeanCreationException {
+
+    // Instantiate the bean.
+    BeanWrapper instanceWrapper = null;
+    ...
+    if (instanceWrapper == null) {
+        instanceWrapper = createBeanInstance(beanName, mbd, args);
+    }
+    
+    Object bean = instanceWrapper.getWrappedInstance();
+
+    ...
+
+    // Initialize the bean instance.
+    Object exposedObject = bean;
+    try {
+        populateBean(beanName, mbd, instanceWrapper);
+        ...
+    }
+    ...
 }
 
 //이 윗과정에서는 생성된 Bean 토대로 BeanWrapper 클래스를 만든 후에 넘긴다
@@ -637,26 +658,71 @@ protected Object doCreateBean(String beanName, RootBeanDefinition mbd, @Nullable
 ↓
 
 protected void populateBean(String beanName, RootBeanDefinition mbd, @Nullable BeanWrapper bw) {
-    ...
+...
 
-		if (hasInstantiationAwareBeanPostProcessors()) {
-		    ...
+    if (hasInstantiationAwareBeanPostProcessors()) {
+        ...
 			
-		    for (InstantiationAwareBeanPostProcessor bp : getBeanPostProcessorCache().instantiationAware) {
-				    PropertyValues pvsToUse = bp.postProcessProperties(pvs, bw.getWrappedInstance(), beanName);
-            ...
-		    }
-		}
+        for (InstantiationAwareBeanPostProcessor bp : getBeanPostProcessorCache().instantiationAware) {
+            PropertyValues pvsToUse = bp.postProcessProperties(pvs, bw.getWrappedInstance(), beanName);
+                ...
+        }
+    }
 
-    ...
-
-		if (needsDepCheck) {
-		    PropertyDescriptor[] filteredPds = filterPropertyDescriptorsForDependencyCheck(bw, mbd.allowCaching);
-		    checkDependencies(beanName, mbd, filteredPds, pvs);
-		}
+    boolean needsDepCheck = (mbd.getDependencyCheck() != AbstractBeanDefinition.DEPENDENCY_CHECK_NONE);
+    if (needsDepCheck) {
+        PropertyDescriptor[] filteredPds = filterPropertyDescriptorsForDependencyCheck(bw, mbd.allowCaching);
+        checkDependencies(beanName, mbd, filteredPds, pvs);
+    }
     ...
 }
 ```
+createBean -> doCreateBean -> populateBean() 메서드로 이어지게된다.
+
+doCreateBean() 메서드에서는 본격적으로 빈을 생성한다. createBeanInstance() 메서드를 통해서 빈을 생성한다.
+
+```java
+if (mbd.getFactoryMethodName() != null) {
+    return instantiateUsingFactoryMethod(beanName, mbd, args);
+}
+
+...
+
+// Candidate constructors for autowiring?
+Constructor<?>[] ctors = determineConstructorsFromBeanPostProcessors(beanClass, beanName);
+if (ctors != null || mbd.getResolvedAutowireMode() == AUTOWIRE_CONSTRUCTOR ||
+    mbd.hasConstructorArgumentValues() || !ObjectUtils.isEmpty(args)) {
+    return autowireConstructor(beanName, mbd, ctors, args);
+}
+
+// Preferred constructors for default construction?
+ctors = mbd.getPreferredConstructors();
+if (ctors != null) {
+    return autowireConstructor(beanName, mbd, ctors, null);
+}
+
+// No special handling: simply use no-arg constructor.
+return instantiateBean(beanName, mbd);
+}
+```
+createBeanInstance() 메서드 내부. 각각 팩토리메서드, Constructor Injection, No-args Constructor 메서드다.
+
+
+```java
+@Configuration
+class AppConfig {
+
+    @Bean
+    public RestTemplate restTemplate() {
+        RestTemplate rt = new RestTemplate();
+        rt.setRequestFactory(...);
+        return rt;
+    }
+}
+```
+이렇게 스프링이 관리하지 않는 특정 객체를 커스텀한 뒤 빈으로 등록하는 경우가 있는데, 이 경우는 팩토리 메서드에 해당한다고한다.
+
+
 
 먼저 hasInstantiationAwareBeanPostProcessors 를 조사한다. 여기서는 Bean을 생성하기 전에 수행해야할 특정한 로직이 있는지 여부를 조사하며, 스프링 AOP에 사용된다.
 
